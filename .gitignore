@@ -8,8 +8,9 @@ planning-docs/
 AGENTS.md
 CLAUDE.md
 
-# Exclude all markdown files from the published repo (per project policy)
+# Exclude planning/working markdown, but allow README
 *.md
+!README.md
 
 # Credentials and tokens (AGENTS.md: never commit)
 config/google_credentials.json
