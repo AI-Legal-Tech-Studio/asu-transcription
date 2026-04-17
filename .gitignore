@@ -1,0 +1,79 @@
+# Environment and secrets (never commit)
+.env
+.env.*
+!.env.example
+
+# Repo coordination docs (kept local, not needed to run the app)
+planning-docs/
+AGENTS.md
+CLAUDE.md
+
+# Exclude all markdown files from the published repo (per project policy)
+*.md
+
+# Credentials and tokens (AGENTS.md: never commit)
+config/google_credentials.json
+config/google_token.json
+config/*.json
+!config/.gitkeep
+
+# Python (kept minimal — this is a Node/Next.js project)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs and runtime (AGENTS.md: logs/ for debugging)
+logs/
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE and editors
+.idea/
+.vscode/
+.cursor/
+.agents/
+.claude/
+.specstory/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Browser-use / automation artifacts (allow public/ and Assets/ images)
+!public/**/*.png
+!Assets/**/*.png
+!Assets/*.jpg
+
+# Optional: uncomment if you keep local overrides here
+# config/local/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+public/.well-known/workflow/
+tsconfig.tsbuildinfo
+tsconfig.*.tsbuildinfo
+test-results/
+playwright-report/
+tests/fixtures/generated-*.wav
+tests/*.mp3
+tests/*.m4a
+tests/*.mp4
+tests/*.wav
+tests/*otter.ai.txt
+tests/*-summary.json
+tests/*-test-results.json
+tests/*-transcript*.txt
+tests/jordan-furlong-test.mjs
+tests/fixtures/generated-*-transcript.txt
+
+.vercel
+.env*.local

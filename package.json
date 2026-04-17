@@ -1,0 +1,39 @@
+{
+  "name": "asu-transcription",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Professional audio transcription and structured brief generation for law clinics, legal aid teams, and attorneys",
+  "license": "MIT",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint . --max-warnings=0"
+  },
+  "dependencies": {
+    "@google/genai": "^1.47.0",
+    "@prisma/adapter-pg": "^7.6.0",
+    "@prisma/client": "^7.6.0",
+    "@vercel/blob": "^2.3.2",
+    "bcryptjs": "^3.0.3",
+    "docx": "^9.6.1",
+    "jose": "^6.2.2",
+    "next": "^16.2.1",
+    "openai": "^6.32.0",
+    "pg": "^8.20.0",
+    "prisma": "^7.6.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "workflow": "^4.2.0-beta.74",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "dotenv": "^17.3.1",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^16.2.1",
+    "typescript": "^5.9.3"
+  }
+}

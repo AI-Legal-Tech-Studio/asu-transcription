@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.next/
+.swc/
+node_modules/
+.vercel/
+playwright-report/
+test-results/
+logs/
+app/.well-known/
+public/.well-known/workflow/

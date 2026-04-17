@@ -1,0 +1,41 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  jobs      Job[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("VoiceTranscriptionUser")
+}
+
+model Job {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileName        String
+  sourceAudioUrl  String?
+  sourceAudioPath String?
+  sourceAudioType String?
+  sourceAudioSize Int?
+  matterType      String
+  focus           String?
+  provider        String
+  status          String
+  errorMessage    String?
+  transcript      String?
+  summary         Json?
+  speakerSegments Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@map("VoiceTranscriptionJob")
+}
