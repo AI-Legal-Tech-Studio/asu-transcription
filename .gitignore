@@ -78,3 +78,5 @@ tests/fixtures/generated-*-transcript.txt
 
 .vercel
 .env*.local
+
+.vercel

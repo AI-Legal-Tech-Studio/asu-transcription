@@ -41,6 +41,33 @@ function getGeminiClient() {
   return new GoogleGenAI({ apiKey });
 }
 
+async function waitForGeminiFileActive(
+  ai: GoogleGenAI,
+  name: string,
+  { timeoutMs = 120_000, intervalMs = 1500 } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const file = await ai.files.get({ name });
+    const state = String(file.state ?? "").toUpperCase();
+
+    if (state === "ACTIVE") {
+      return file;
+    }
+
+    if (state === "FAILED") {
+      throw new Error(
+        `Gemini file processing failed (${file.error?.message ?? "unknown error"}).`,
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error("Gemini file did not become ACTIVE within the expected time.");
+}
+
 const geminiResponseSchema = {
   type: Type.OBJECT,
   properties: {
@@ -155,6 +182,7 @@ export async function uploadGeminiAudio(
   }
 
   try {
+    await waitForGeminiFileActive(ai, uploadedFile.name);
     const tokenCount = await ai.models.countTokens({
       model: getGeminiTranscriptionModel(),
       contents: createUserContent([
@@ -274,8 +302,12 @@ export const geminiTranscriptionProvider: TranscriptionProvider = {
               },
             });
 
-            return uploadedFilePromise.then((uploadedFile) => {
+            return uploadedFilePromise.then(async (uploadedFile) => {
               uploadedFileName = uploadedFile.name ?? null;
+
+              if (uploadedFile.name) {
+                await waitForGeminiFileActive(ai, uploadedFile.name);
+              }
 
               return [
                 { text: prompt },
