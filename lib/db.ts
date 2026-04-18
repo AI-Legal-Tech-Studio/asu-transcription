@@ -1,9 +1,16 @@
+import { setDefaultResultOrder } from "node:dns";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as typeof globalThis & {
   prisma?: PrismaClient;
 };
+
+try {
+  setDefaultResultOrder("ipv4first");
+} catch {
+  // Ignore environments that do not expose DNS result-order overrides.
+}
 
 function createPrismaClient() {
   const connectionString =

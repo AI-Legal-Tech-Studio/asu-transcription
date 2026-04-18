@@ -9,9 +9,9 @@ const bodyFont = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "ASU Law Clinic Transcription",
+  title: "Clinic Transcription Workbench",
   description:
-    "Upload an intake recording, generate a transcript, and turn it into a structured clinic-ready case brief.",
+    "A legal workbench for turning recorded interviews and intake conversations into reviewed transcripts, chronologies, and clinic-ready case briefs.",
 };
 
 export default function RootLayout({

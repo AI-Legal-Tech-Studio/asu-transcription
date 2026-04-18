@@ -1,38 +1,32 @@
 import { randomUUID } from "node:crypto";
+import { setDefaultResultOrder } from "node:dns";
 
 import type { Job, User } from "@prisma/client";
 import { Pool } from "pg";
 
-import type { SpeakerSegment } from "@/lib/providers/types";
-import type { ClinicSummary } from "@/lib/summary-schema";
+import type {
+  CreatePendingStoredJobInput,
+  UpdateStoredJobInput,
+} from "@/lib/job-store-types";
+import {
+  createPendingLocalJob,
+  deleteLocalJobForUser,
+  listLocalJobsForUser,
+  loadLocalJob,
+  loadLocalJobForUser,
+  updateLocalJob,
+} from "@/lib/local-job-store";
 
 const globalForJobStore = globalThis as typeof globalThis & {
+  jobStoreMode?: "database" | "local";
   jobStorePool?: Pool;
 };
 
-type PendingJobSourceAudio = {
-  path: string;
-  size: number;
-  type: string;
-  url: string;
-} | null;
-
-type CreatePendingStoredJobInput = {
-  fileName: string;
-  focus: string;
-  matterType: string;
-  providerId: string;
-  sourceAudio: PendingJobSourceAudio;
-  userEmail: string;
-};
-
-type UpdateStoredJobInput = {
-  errorMessage?: string | null;
-  speakerSegments?: SpeakerSegment[] | null;
-  status?: string;
-  summary?: ClinicSummary | null;
-  transcript?: string | null;
-};
+try {
+  setDefaultResultOrder("ipv4first");
+} catch {
+  // Ignore platforms that do not support overriding result order.
+}
 
 function getConnectionString() {
   const connectionString =
@@ -50,6 +44,7 @@ function getJobStorePool() {
   if (!globalForJobStore.jobStorePool) {
     globalForJobStore.jobStorePool = new Pool({
       connectionString: getConnectionString(),
+      connectionTimeoutMillis: 10_000,
       max: 5,
     });
   }
@@ -57,7 +52,76 @@ function getJobStorePool() {
   return globalForJobStore.jobStorePool;
 }
 
-export async function createPendingStoredJob({
+function collectErrorMessages(error: unknown, messages: string[] = []): string[] {
+  if (error instanceof Error) {
+    messages.push(error.message.toLowerCase());
+
+    const cause = (error as Error & { cause?: unknown }).cause;
+    if (cause) {
+      collectErrorMessages(cause, messages);
+    }
+  }
+
+  return messages;
+}
+
+function shouldUseLocalStore(error: unknown) {
+  const connectionErrorMarkers = [
+    "connection timeout",
+    "connection terminated",
+    "connect etimedout",
+    "econnrefused",
+    "econnreset",
+    "enotfound",
+    "ehostunreach",
+    "network is unreachable",
+    "terminat",
+  ];
+
+  return collectErrorMessages(error).some((message) =>
+    connectionErrorMarkers.some((marker) => message.includes(marker)),
+  );
+}
+
+function resetJobStorePool() {
+  const pool = globalForJobStore.jobStorePool;
+  delete globalForJobStore.jobStorePool;
+
+  if (pool) {
+    void pool.end().catch(() => null);
+  }
+}
+
+async function withJobStoreFallback<T>(
+  operationName: string,
+  databaseOperation: () => Promise<T>,
+  localOperation: () => Promise<T>,
+): Promise<T> {
+  if (globalForJobStore.jobStoreMode === "local") {
+    return localOperation();
+  }
+
+  try {
+    const result = await databaseOperation();
+    globalForJobStore.jobStoreMode = "database";
+    return result;
+  } catch (error) {
+    if (!shouldUseLocalStore(error)) {
+      throw error;
+    }
+
+    console.warn(
+      `Database unavailable during ${operationName}; switching to the local job store.`,
+    );
+
+    globalForJobStore.jobStoreMode = "local";
+    resetJobStorePool();
+
+    return localOperation();
+  }
+}
+
+async function createPendingStoredJobInDatabase({
   fileName,
   focus,
   matterType,
@@ -142,7 +206,7 @@ export async function createPendingStoredJob({
   }
 }
 
-export async function loadStoredJob(jobId: string): Promise<Job | null> {
+async function loadStoredJobFromDatabase(jobId: string): Promise<Job | null> {
   const pool = getJobStorePool();
   const result = await pool.query<Job>(
     `
@@ -157,7 +221,9 @@ export async function loadStoredJob(jobId: string): Promise<Job | null> {
   return result.rows[0] ?? null;
 }
 
-export async function listStoredJobsForUser(userEmail: string): Promise<Job[]> {
+async function listStoredJobsForUserFromDatabase(
+  userEmail: string,
+): Promise<Job[]> {
   const pool = getJobStorePool();
   const result = await pool.query<Job>(
     `
@@ -173,7 +239,7 @@ export async function listStoredJobsForUser(userEmail: string): Promise<Job[]> {
   return result.rows;
 }
 
-export async function loadStoredJobForUser(
+async function loadStoredJobForUserFromDatabase(
   jobId: string,
   userEmail: string,
 ): Promise<Job | null> {
@@ -193,7 +259,7 @@ export async function loadStoredJobForUser(
   return result.rows[0] ?? null;
 }
 
-export async function deleteStoredJobForUser(
+async function deleteStoredJobForUserFromDatabase(
   jobId: string,
   userEmail: string,
 ): Promise<Job | null> {
@@ -213,7 +279,7 @@ export async function deleteStoredJobForUser(
   return result.rows[0] ?? null;
 }
 
-export async function updateStoredJob(
+async function updateStoredJobInDatabase(
   jobId: string,
   data: UpdateStoredJobInput,
 ): Promise<Job> {
@@ -274,4 +340,63 @@ export async function updateStoredJob(
   }
 
   return job;
+}
+
+export async function createPendingStoredJob(
+  input: CreatePendingStoredJobInput,
+): Promise<Job> {
+  return withJobStoreFallback(
+    "createPendingStoredJob",
+    () => createPendingStoredJobInDatabase(input),
+    () => createPendingLocalJob(input),
+  );
+}
+
+export async function loadStoredJob(jobId: string): Promise<Job | null> {
+  return withJobStoreFallback(
+    "loadStoredJob",
+    () => loadStoredJobFromDatabase(jobId),
+    () => loadLocalJob(jobId),
+  );
+}
+
+export async function listStoredJobsForUser(userEmail: string): Promise<Job[]> {
+  return withJobStoreFallback(
+    "listStoredJobsForUser",
+    () => listStoredJobsForUserFromDatabase(userEmail),
+    () => listLocalJobsForUser(userEmail),
+  );
+}
+
+export async function loadStoredJobForUser(
+  jobId: string,
+  userEmail: string,
+): Promise<Job | null> {
+  return withJobStoreFallback(
+    "loadStoredJobForUser",
+    () => loadStoredJobForUserFromDatabase(jobId, userEmail),
+    () => loadLocalJobForUser(jobId, userEmail),
+  );
+}
+
+export async function deleteStoredJobForUser(
+  jobId: string,
+  userEmail: string,
+): Promise<Job | null> {
+  return withJobStoreFallback(
+    "deleteStoredJobForUser",
+    () => deleteStoredJobForUserFromDatabase(jobId, userEmail),
+    () => deleteLocalJobForUser(jobId, userEmail),
+  );
+}
+
+export async function updateStoredJob(
+  jobId: string,
+  data: UpdateStoredJobInput,
+): Promise<Job> {
+  return withJobStoreFallback(
+    "updateStoredJob",
+    () => updateStoredJobInDatabase(jobId, data),
+    () => updateLocalJob(jobId, data),
+  );
 }

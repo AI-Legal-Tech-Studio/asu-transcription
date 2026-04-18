@@ -17,6 +17,18 @@ function formatDate(value: string) {
   }).format(new Date(value));
 }
 
+function getStatusTone(status: string) {
+  if (status === "done") {
+    return "status-chip-good";
+  }
+
+  if (status === "failed") {
+    return "status-chip-bad";
+  }
+
+  return "status-chip-live";
+}
+
 export function JobHistory({
   isLoading,
   jobs,
@@ -25,42 +37,54 @@ export function JobHistory({
   selectedJobId,
 }: JobHistoryProps) {
   return (
-    <section className="job-history panel">
-      <div className="panel-header">
-        <p className="eyebrow">History</p>
-        <h2>Saved transcriptions</h2>
-        <p className="hint">Each signed-in user only sees their own jobs.</p>
-      </div>
+    <section className="history-panel">
+      <header className="panel-heading">
+        <div>
+          <p className="section-kicker">Matter history</p>
+          <h2>Saved recordings</h2>
+        </div>
+        <p className="muted-copy">Only your own saved jobs appear here.</p>
+      </header>
 
-      {isLoading ? <p className="hint">Loading saved jobs…</p> : null}
+      {isLoading ? (
+        <p className="muted-copy">
+          Connecting to matter history. If the database is waking up, this can
+          take a moment.
+        </p>
+      ) : null}
 
       {!isLoading && jobs.length === 0 ? (
-        <div className="empty-state compact-empty">
-          <p className="eyebrow">No history yet</p>
-          <p>Your completed jobs will appear here after the first upload.</p>
+        <div className="history-empty">
+          <p className="section-kicker">No saved matters yet</p>
+          <p className="muted-copy">
+            The first completed upload will show up here with its transcript and
+            review artifacts.
+          </p>
         </div>
       ) : null}
 
-      <div className="job-list">
+      <div className="history-list">
         {jobs.map((job) => (
           <article
             key={job.id}
-            className={`job-card ${selectedJobId === job.id ? "job-card-active" : ""}`}
+            className={`history-item ${selectedJobId === job.id ? "history-item-active" : ""}`}
           >
             <button
-              className="job-select"
+              className="history-select"
               onClick={() => onSelectJob(job.id)}
               type="button"
             >
-              <strong>{job.fileName}</strong>
-              <span>{formatDate(job.createdAt)}</span>
-              <span>{job.matterType}</span>
-              <span>{job.provider}</span>
-              <span>{job.status}</span>
+              <div className="history-item-top">
+                <strong>{job.fileName}</strong>
+                <span className={`status-chip ${getStatusTone(job.status)}`}>{job.status}</span>
+              </div>
+              <p className="muted-copy">{job.matterType}</p>
+              <p className="history-meta">{formatDate(job.createdAt)}</p>
+              <p className="history-meta">{job.provider}</p>
             </button>
 
             <button
-              className="danger-button"
+              className="tertiary-button danger-button"
               onClick={() => onDeleteJob(job.id)}
               type="button"
             >

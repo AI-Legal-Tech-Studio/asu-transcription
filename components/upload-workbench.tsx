@@ -1,14 +1,18 @@
 "use client";
 
 import { upload } from "@vercel/blob/client";
-import { useEffect, useEffectEvent, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { buildAudioUploadPath } from "@/lib/audio-upload";
 import { JobHistory } from "@/components/job-history";
+import { PipelineStatus, buildPipelineStages } from "@/components/pipeline-status";
+import {
+  WorkbenchDocument,
+  type WorkbenchTab,
+} from "@/components/workbench-document";
+import { buildAudioUploadPath } from "@/lib/audio-upload";
 import type {
   JobDetail,
   JobListItem,
-  ProviderListResponse,
 } from "@/lib/jobs";
 import type { ProviderOption } from "@/lib/providers/types";
 import {
@@ -36,6 +40,12 @@ type ParsedApiResponse<T> = {
 };
 
 type UploadWorkbenchProps = {
+  currentUserEmail: string | null;
+  defaultProviderId: string | null;
+  hasBlobStore: boolean;
+  hasDatabase: boolean;
+  hasSummary: boolean;
+  initialProviders: ProviderOption[];
   summaryModel: string;
 };
 
@@ -56,32 +66,8 @@ function getDefaultUploadSupport() {
   };
 }
 
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function renderTranscript(job: JobDetail) {
-  if (job.speakerSegments.length > 0) {
-    return job.speakerSegments
-      .map((segment) => {
-        const speaker = segment.speaker?.trim() || "Speaker";
-        return `${speaker}: ${segment.text}`;
-      })
-      .join("\n\n");
-  }
-
-  return job.transcript ?? "";
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object";
-}
-
-function hasProvidersPayload(value: unknown): value is ProviderListResponse {
-  return isRecord(value) && Array.isArray(value.providers);
 }
 
 function hasJobsPayload(value: unknown): value is JobsResponse {
@@ -143,7 +129,11 @@ function getApiErrorMessage(
     : normalizedText;
 }
 
-function getUploadErrorMessage(payload: unknown, response: Response, rawText: string | null) {
+function getUploadErrorMessage(
+  payload: unknown,
+  response: Response,
+  rawText: string | null,
+) {
   if (isErrorPayload(payload)) {
     return payload.error;
   }
@@ -155,113 +145,180 @@ function getUploadErrorMessage(payload: unknown, response: Response, rawText: st
   return getApiErrorMessage(
     payload,
     rawText,
-    "The app could not complete the transcript and summary workflow.",
+    "The workbench could not complete the transcript and review workflow.",
   );
 }
 
-export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
-  const [providers, setProviders] = useState<ProviderOption[]>([]);
-  const [selectedProviderId, setSelectedProviderId] = useState("");
+function getProviderUploadHint(provider?: ProviderOption) {
+  const uploadSupport = provider?.upload ?? getDefaultUploadSupport();
+
+  if (!provider) {
+    return `Current limit for this provider: ${uploadSupport.maxSizeLabel}.`;
+  }
+
+  if (uploadSupport.mode === "blob") {
+    return `${provider.name} uses private blob upload for larger recordings. Current limit: ${uploadSupport.maxSizeLabel}.`;
+  }
+
+  return `${provider.name} currently accepts up to ${uploadSupport.maxSizeLabel} per request on this deployment.`;
+}
+
+export function UploadWorkbench({
+  currentUserEmail,
+  defaultProviderId,
+  hasBlobStore,
+  hasDatabase,
+  hasSummary,
+  initialProviders,
+  summaryModel,
+}: UploadWorkbenchProps) {
+  const [selectedProviderId, setSelectedProviderId] = useState(
+    defaultProviderId ?? initialProviders[0]?.id ?? "",
+  );
   const [jobs, setJobs] = useState<JobListItem[]>([]);
   const [activeJob, setActiveJob] = useState<JobDetail | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [isLoadingJobs, setIsLoadingJobs] = useState(true);
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>("brief");
+  const [isLoadingJobs, setIsLoadingJobs] = useState(hasDatabase);
   const [isLoadingJob, setIsLoadingJob] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStage, setSubmitStage] = useState<SubmitStage>("idle");
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+
+  const providers = initialProviders;
+  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
+  const selectedUploadSupport = selectedProvider?.upload ?? getDefaultUploadSupport();
   const activeJobStatus = activeJob?.status ?? null;
 
-  async function loadProviders() {
-    const response = await fetch("/api/providers");
-    const { payload, rawText } = await parseApiResponse<
-      ProviderListResponse | ApiErrorPayload
-    >(response);
-
-    if (!response.ok || !hasProvidersPayload(payload)) {
-      throw new Error(
-        getApiErrorMessage(
-          payload,
-          rawText,
-          "The app could not load transcription providers.",
-        ),
-      );
-    }
-
-    setProviders(payload.providers);
-    setSelectedProviderId(
-      payload.defaultProviderId ?? payload.providers[0]?.id ?? "",
-    );
-  }
-
-  async function loadJobs(selectFirst = false, options?: LoadOptions) {
-    if (!options?.silent) {
-      setIsLoadingJobs(true);
-    }
-
-    try {
-      const response = await fetch("/api/jobs");
-      const { payload, rawText } = await parseApiResponse<
-        JobsResponse | ApiErrorPayload
-      >(response);
-
-      if (!response.ok || !hasJobsPayload(payload)) {
-        throw new Error(
-          getApiErrorMessage(payload, rawText, "The app could not load job history."),
-        );
+  const loadJob = useCallback(
+    async (jobId: string, options?: LoadOptions) => {
+      if (!hasDatabase) {
+        return;
       }
 
-      setJobs(payload.jobs);
-
-      if (selectFirst && payload.jobs[0]) {
-        await loadJob(payload.jobs[0].id);
-      }
-    } finally {
       if (!options?.silent) {
+        setIsLoadingJob(true);
+      }
+
+      setSelectedJobId(jobId);
+
+      try {
+        const response = await fetch(`/api/jobs/${jobId}`);
+        const { payload, rawText } = await parseApiResponse<
+          JobResponse | ApiErrorPayload
+        >(response);
+
+        if (!response.ok || !hasJobPayload(payload)) {
+          throw new Error(
+            getApiErrorMessage(payload, rawText, "The workbench could not open that matter."),
+          );
+        }
+
+        setActiveJob(payload.job);
+        setWorkspaceError(null);
+      } catch (loadError) {
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : "The workbench could not open that matter.";
+
+        setWorkspaceError(message);
+      } finally {
+        if (!options?.silent) {
+          setIsLoadingJob(false);
+        }
+      }
+    },
+    [hasDatabase],
+  );
+
+  const loadJobs = useCallback(
+    async (options?: LoadOptions) => {
+      if (!hasDatabase) {
         setIsLoadingJobs(false);
-      }
-    }
-  }
-
-  async function loadJob(jobId: string, options?: LoadOptions) {
-    if (!options?.silent) {
-      setIsLoadingJob(true);
-    }
-    setSelectedJobId(jobId);
-
-    try {
-      const response = await fetch(`/api/jobs/${jobId}`);
-      const { payload, rawText } = await parseApiResponse<
-        JobResponse | ApiErrorPayload
-      >(response);
-
-      if (!response.ok || !hasJobPayload(payload)) {
-        throw new Error(
-          getApiErrorMessage(payload, rawText, "The app could not load that saved job."),
-        );
+        return;
       }
 
-      setActiveJob(payload.job);
-      setError(null);
-    } catch (loadError) {
-      const message =
-        loadError instanceof Error
-          ? loadError.message
-          : "The app could not load that saved job.";
-
-      setError(message);
-    } finally {
       if (!options?.silent) {
-        setIsLoadingJob(false);
+        setIsLoadingJobs(true);
       }
+
+      try {
+        const response = await fetch("/api/jobs");
+        const { payload, rawText } = await parseApiResponse<
+          JobsResponse | ApiErrorPayload
+        >(response);
+
+        if (!response.ok || !hasJobsPayload(payload)) {
+          throw new Error(
+            getApiErrorMessage(
+              payload,
+              rawText,
+              "The workbench could not load matter history.",
+            ),
+          );
+        }
+
+        setJobs(payload.jobs);
+        setWorkspaceError(null);
+      } catch (loadError) {
+        const message =
+          loadError instanceof Error
+            ? loadError.message
+            : "The workbench could not load matter history.";
+
+        setWorkspaceError(message);
+      } finally {
+        if (!options?.silent) {
+          setIsLoadingJobs(false);
+        }
+      }
+    },
+    [hasDatabase],
+  );
+
+  useEffect(() => {
+    const initializeJobs = async () => {
+      await loadJobs();
+    };
+
+    void initializeJobs();
+  }, [loadJobs]);
+
+  useEffect(() => {
+    if (selectedJobId || jobs.length === 0) {
+      return;
     }
-  }
+
+    const timeoutId = window.setTimeout(() => {
+      void loadJob(jobs[0].id, { silent: true });
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [jobs, loadJob, selectedJobId]);
+
+  useEffect(() => {
+    if (!selectedJobId || !activeJobStatus || isTerminalJobStatus(activeJobStatus)) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      void Promise.all([
+        loadJob(selectedJobId, { silent: true }),
+        loadJobs({ silent: true }),
+      ]);
+    }, 5_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [activeJobStatus, loadJob, loadJobs, selectedJobId]);
 
   async function handleDeleteJob(jobId: string) {
-    const confirmed = window.confirm(
-      "Delete this transcription from history?",
-    );
+    const confirmed = window.confirm("Delete this saved matter from history?");
 
     if (!confirmed) {
       return;
@@ -275,7 +332,7 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
 
       if (!response.ok) {
         throw new Error(
-          getApiErrorMessage(payload, rawText, "The app could not delete that job."),
+          getApiErrorMessage(payload, rawText, "The workbench could not delete that matter."),
         );
       }
 
@@ -285,6 +342,7 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
       if (selectedJobId === jobId) {
         setSelectedJobId(remainingJobs[0]?.id ?? null);
         setActiveJob(null);
+        setActiveTab("brief");
 
         if (remainingJobs[0]) {
           await loadJob(remainingJobs[0].id);
@@ -294,33 +352,44 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
       const message =
         deleteError instanceof Error
           ? deleteError.message
-          : "The app could not delete that job.";
+          : "The workbench could not delete that matter.";
 
-      setError(message);
+      setWorkspaceError(message);
     }
   }
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
+    if (!hasDatabase) {
+      setWorkspaceError("Database persistence is not configured on this deployment.");
+      return;
+    }
+
+    if (!hasSummary) {
+      setWorkspaceError("Summary generation is not configured on this deployment.");
+      return;
+    }
+
     const form = event.currentTarget;
     const formData = new FormData(form);
     const audioFile = formData.get("audio");
-    const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
     const uploadSupport = selectedProvider?.upload ?? getDefaultUploadSupport();
 
     if (!(audioFile instanceof File) || audioFile.size === 0) {
-      setError("Attach an audio file before you run the workflow.");
+      setWorkspaceError("Attach an audio file before you run the workflow.");
       return;
     }
 
     if (audioFile.size > uploadSupport.maxBytes) {
-      setError(getUploadSizeLimitMessage(uploadSupport.maxSizeLabel, uploadSupport.mode));
+      setWorkspaceError(
+        getUploadSizeLimitMessage(uploadSupport.maxSizeLabel, uploadSupport.mode),
+      );
       return;
     }
 
     if (!selectedProviderId) {
-      setError("Choose a transcription provider before uploading.");
+      setWorkspaceError("Choose a transcription provider before uploading.");
       return;
     }
 
@@ -328,7 +397,7 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
     setIsSubmitting(true);
     setSubmitStage(uploadSupport.mode === "blob" ? "uploading" : "processing");
     setUploadProgress(uploadSupport.mode === "blob" ? 0 : null);
-    setError(null);
+    setWorkspaceError(null);
 
     try {
       let requestBody: FormData = formData;
@@ -373,14 +442,15 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
 
       setActiveJob(payload.job);
       setSelectedJobId(payload.job.id);
-      await loadJobs(false);
+      setActiveTab("brief");
+      await loadJobs({ silent: true });
     } catch (submissionError) {
       const message =
         submissionError instanceof Error
           ? submissionError.message
-          : "The request did not complete successfully.";
+          : "The workbench could not finish the request.";
 
-      setError(message);
+      setWorkspaceError(message);
     } finally {
       setIsSubmitting(false);
       setSubmitStage("idle");
@@ -388,92 +458,86 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
     }
   }
 
-  const loadInitialWorkspaceData = useEffectEvent(async () => {
-    try {
-      await Promise.all([loadProviders(), loadJobs(true)]);
-    } catch (loadError) {
-      const message =
-        loadError instanceof Error
-          ? loadError.message
-          : "The app could not load the workspace data.";
-
-      setError(message);
-    }
-  });
-
-  const pollActiveJob = useEffectEvent(async () => {
-    if (!selectedJobId) {
-      return;
-    }
-
-    await Promise.all([
-      loadJob(selectedJobId, { silent: true }),
-      loadJobs(false, { silent: true }),
-    ]);
-  });
-
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void loadInitialWorkspaceData();
-  }, []);
-
-  useEffect(() => {
-    if (!selectedJobId) {
-      return;
-    }
-
-    if (!activeJobStatus || isTerminalJobStatus(activeJobStatus)) {
-      return;
-    }
-
-    const intervalId = window.setInterval(() => {
-      void pollActiveJob();
-    }, 5_000);
-
-    return () => {
-      window.clearInterval(intervalId);
-    };
-  }, [activeJobStatus, selectedJobId]);
-
   const providerLabel =
     providers.find((provider) => provider.id === activeJob?.provider)?.name ??
-    activeJob?.provider;
-  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId);
-  const selectedUploadSupport = selectedProvider?.upload ?? getDefaultUploadSupport();
-  const uploadHint =
-    selectedUploadSupport.mode === "blob"
-      ? selectedProviderId === "gemini"
-        ? `Large ${selectedProvider?.name ?? "provider"} uploads go to private Blob storage first. Current limit: ${selectedUploadSupport.maxSizeLabel}. Gemini Blob jobs continue in the background after upload and refresh here automatically.`
-        : selectedProviderId === "voxtral-openrouter"
-          ? `Large ${selectedProvider?.name ?? "provider"} uploads go to private Blob storage first. Current limit: ${selectedUploadSupport.maxSizeLabel}. Voxtral still runs inside this request after upload and may truncate longer recordings.`
-          : `Large ${selectedProvider?.name ?? "provider"} uploads go to private Blob storage first. Current limit: ${selectedUploadSupport.maxSizeLabel}.`
-      : `Current limit for ${selectedProvider?.name ?? "this provider"}: ${selectedUploadSupport.maxSizeLabel}.`;
+    activeJob?.provider ??
+    null;
+
   const submitLabel =
     submitStage === "uploading"
-      ? `Uploading audio${
-          typeof uploadProgress === "number" ? ` (${uploadProgress}%)` : "..."
-        }`
+      ? `Uploading${typeof uploadProgress === "number" ? ` (${uploadProgress}%)` : ""}`
       : submitStage === "processing"
-        ? "Processing job..."
-        : "Generate clinic brief";
+        ? "Processing matter"
+        : "Generate work product";
+
+  const systemNotes = useMemo(() => {
+    const notes: string[] = [];
+
+    if (!hasDatabase) {
+      notes.push("Database persistence is missing, so uploads and history are disabled.");
+    }
+
+    if (!hasSummary) {
+      notes.push("Structured summary generation is not configured on this deployment.");
+    }
+
+    if (providers.length === 0) {
+      notes.push(
+        "No transcription provider is configured. Add Google, OpenAI, OpenRouter, or whisper-local credentials.",
+      );
+    }
+
+    if (!hasBlobStore) {
+      notes.push("Large direct-to-blob uploads are unavailable without Blob configuration.");
+    }
+
+    return notes;
+  }, [hasBlobStore, hasDatabase, hasSummary, providers.length]);
+
+  const outputSnapshot = useMemo(() => {
+    if (!activeJob?.summary) {
+      return [
+        { label: "Speakers", value: "0" },
+        { label: "Issues", value: "0" },
+        { label: "Actions", value: "0" },
+        { label: "Follow-up", value: "0" },
+      ];
+    }
+
+    return [
+      { label: "Speakers", value: String(activeJob.summary.speakers.length) },
+      { label: "Issues", value: String(activeJob.summary.legalIssues.length) },
+      { label: "Actions", value: String(activeJob.summary.actionItems.length) },
+      {
+        label: "Follow-up",
+        value: String(activeJob.summary.followUpQuestions.length),
+      },
+    ];
+  }, [activeJob]);
+
+  const stages = buildPipelineStages(activeJob);
+  const canSubmit =
+    Boolean(selectedProviderId) && providers.length > 0 && hasDatabase && hasSummary;
 
   return (
-    <section className="workspace-grid">
-      <div className="sidebar-stack">
-        <div className="panel workbench-panel">
-          <div className="panel-header">
-            <p className="eyebrow">Upload + Prompting</p>
-            <h2>Start a new transcription</h2>
-            <p className="hint">
-              Provider selection is required before upload. Gemini can use
-              private storage for larger files on Blob-enabled deployments, and
-              completed jobs are saved to history.
+    <section className="workbench-layout">
+      <aside className="workbench-rail">
+        <section className="composer-panel">
+          <header className="panel-heading">
+            <div>
+              <p className="section-kicker">New recording</p>
+              <h2>Start intake review</h2>
+            </div>
+            <p className="muted-copy">
+              Pick the provider, give the model matter context, and keep moving.
             </p>
-          </div>
+          </header>
 
-          <form className="stack" onSubmit={handleSubmit}>
+          {workspaceError ? <p className="inline-alert">{workspaceError}</p> : null}
+
+          <form className="form-stack" onSubmit={handleSubmit}>
             <label className="field">
-              <span>Transcription provider</span>
+              <span className="field-label">Transcription provider</span>
               <select
                 disabled={providers.length === 0 || isSubmitting}
                 name="provider"
@@ -493,7 +557,7 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
             </label>
 
             <label className="field">
-              <span>Audio file</span>
+              <span className="field-label">Audio file</span>
               <input
                 accept="audio/*,.mp3,.mp4,.m4a,.mpeg,.mpga,.wav,.webm"
                 disabled={providers.length === 0 || isSubmitting}
@@ -501,11 +565,11 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
                 required
                 type="file"
               />
-              <p className="hint">{uploadHint}</p>
+              <p className="field-hint">{getProviderUploadHint(selectedProvider)}</p>
             </label>
 
             <label className="field">
-              <span>Matter type</span>
+              <span className="field-label">Matter type</span>
               <select defaultValue="Client intake" disabled={isSubmitting} name="matterType">
                 <option>Client intake</option>
                 <option>Witness interview</option>
@@ -516,33 +580,34 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
             </label>
 
             <label className="field">
-              <span>Clinic focus</span>
+              <span className="field-label">Clinic focus</span>
               <textarea
                 defaultValue="Highlight urgent deadlines, unresolved facts, and follow-up tasks."
                 disabled={isSubmitting}
                 name="focus"
-                rows={4}
+                rows={5}
               />
             </label>
 
-            <button
-              className="primary-button"
-              disabled={providers.length === 0 || isSubmitting}
-              type="submit"
-            >
+            <button className="primary-button" disabled={!canSubmit || isSubmitting} type="submit">
               {submitLabel}
             </button>
           </form>
 
-          {error ? <p className="notice notice-error">{error}</p> : null}
-
-          <div className="meta-card">
-            <p className="eyebrow">Current Summary Model</p>
-            <p>
-              <strong>Summary drafting:</strong> <code>{summaryModel}</code>
+          <div className="provider-summary">
+            <p className="section-kicker">Selected route</p>
+            <h3>{selectedProvider?.name ?? "Configuration needed"}</h3>
+            <p className="muted-copy">
+              {selectedProvider?.description ??
+                "Once a provider is configured, this panel will describe how the audio will be processed."}
             </p>
+            <ul className="inline-stat-list">
+              <li>{selectedProvider?.mode ?? "unavailable"}</li>
+              <li>{selectedUploadSupport.mode === "blob" ? "blob upload" : "direct request"}</li>
+              <li>{selectedUploadSupport.maxSizeLabel}</li>
+            </ul>
           </div>
-        </div>
+        </section>
 
         <JobHistory
           isLoading={isLoadingJobs}
@@ -551,197 +616,98 @@ export function UploadWorkbench({ summaryModel }: UploadWorkbenchProps) {
           onSelectJob={(jobId) => void loadJob(jobId)}
           selectedJobId={selectedJobId}
         />
-      </div>
+      </aside>
 
-      <div className="panel results-panel">
-        <div className="panel-header">
-          <p className="eyebrow">Output</p>
-          <h2>Transcript + structured summary</h2>
-          <p className="hint">
-            Completed jobs persist here and can be re-opened from history.
-          </p>
-        </div>
-
-        {isLoadingJob ? <p className="hint">Loading saved job…</p> : null}
-
-        {activeJob ? (
-          <div className="result-stack">
-            <div className="result-header">
-              <div>
-                <h3>{activeJob.summary?.matterTitle || activeJob.fileName}</h3>
-                <p className="hint">
-                  {formatDate(activeJob.createdAt)}
-                  {" · "}
-                  {providerLabel || activeJob.provider}
-                </p>
-              </div>
-              <span
-                className={`status-pill ${
-                  activeJob.status === "done"
-                    ? "status-good"
-                    : activeJob.status === "failed"
-                      ? "status-bad"
-                      : ""
-                }`}
-              >
-                {activeJob.status}
-              </span>
+      <div className="workbench-center-column">
+        <section className="pipeline-panel">
+          <header className="panel-heading">
+            <div>
+              <p className="section-kicker">Matter flow</p>
+              <h2>From recording to reviewed work product</h2>
             </div>
-
-            {activeJob.errorMessage ? (
-              <p className="notice notice-error">{activeJob.errorMessage}</p>
-            ) : null}
-
-            {activeJobStatus && !isTerminalJobStatus(activeJobStatus) ? (
-              <p className="notice">
-                This job is still processing in the background. The transcript
-                and summary refresh automatically while it runs.
-              </p>
-            ) : null}
-
-            {activeJob.summary ? (
-              <>
-                {activeJob.summary.speakers.length > 0 ? (
-                  <article className="result-section">
-                    <h4>Speakers</h4>
-                    <ul className="plain-list">
-                      {activeJob.summary.speakers.map((speaker) => (
-                        <li key={`${speaker.label}-${speaker.inferredRole ?? ""}`}>
-                          <strong>{speaker.label}</strong>
-                          {speaker.inferredRole ? `: ${speaker.inferredRole}` : ""}
-                        </li>
-                      ))}
-                    </ul>
-                  </article>
-                ) : null}
-
-                <article className="result-section">
-                  <h4>Executive summary</h4>
-                  <p>{activeJob.summary.executiveSummary}</p>
-                </article>
-
-                <article className="result-section">
-                  <h4>Client objectives</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.clientObjectives.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Material facts</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.materialFacts.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Legal issues</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.legalIssues.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Timeline</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.timeline.map((item) => (
-                      <li key={`${item.moment}-${item.significance}`}>
-                        <strong>{item.moment}</strong>: {item.significance}
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Risks and cautions</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.risks.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Action items</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.actionItems.map((item) => (
-                      <li key={`${item.owner}-${item.task}`}>
-                        <strong>{item.owner}</strong> ({item.urgency}): {item.task}
-                      </li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Follow-up questions</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.followUpQuestions.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Recommended artifacts</h4>
-                  <ul className="plain-list">
-                    {activeJob.summary.recommendedArtifacts.map((item) => (
-                      <li key={item}>{item}</li>
-                    ))}
-                  </ul>
-                </article>
-
-                <article className="result-section">
-                  <h4>Confidentiality note</h4>
-                  <p>{activeJob.summary.confidentialityNotes}</p>
-                </article>
-              </>
-            ) : (
-              <div className="empty-state compact-empty">
-                <p className="eyebrow">Summary pending</p>
-                <p>This job does not have a completed summary yet.</p>
-              </div>
-            )}
-
-            {activeJob.transcript ? (
-              <details className="transcript-card" open>
-                <summary>View transcript</summary>
-                <div className="transcript-actions">
-                  <a
-                    href={`/api/jobs/${activeJob.id}/download?format=txt`}
-                    className="download-btn"
-                    download
-                  >
-                    Download .TXT
-                  </a>
-                  <a
-                    href={`/api/jobs/${activeJob.id}/download?format=docx`}
-                    className="download-btn"
-                    download
-                  >
-                    Download .DOCX
-                  </a>
-                </div>
-                <pre>{renderTranscript(activeJob)}</pre>
-              </details>
-            ) : null}
-          </div>
-        ) : (
-          <div className="empty-state">
-            <p className="eyebrow">Waiting for a recording</p>
-            <h3>No job selected</h3>
-            <p>
-              Upload a new recording or pick a saved transcription from the
-              history list to view its transcript and structured summary.
+            <p className="muted-copy">
+              Each saved matter moves through upload, transcription, extraction,
+              review, and export.
             </p>
-          </div>
-        )}
+          </header>
+
+          <PipelineStatus stages={stages} />
+        </section>
+
+        <WorkbenchDocument
+          activeJob={activeJob}
+          activeTab={activeTab}
+          isLoadingJob={isLoadingJob}
+          onTabChange={setActiveTab}
+          providerLabel={providerLabel}
+        />
       </div>
+
+      <aside className="workbench-inspector">
+        <header className="panel-heading">
+          <div>
+            <p className="section-kicker">System state</p>
+            <h2>Operational notes</h2>
+          </div>
+          <p className="muted-copy">
+            The point is steady legal workflow, not mystery behavior.
+          </p>
+        </header>
+
+        <section className="inspector-section">
+          <p className="section-kicker">Deployment</p>
+          <dl className="inspector-stats">
+            <div>
+              <dt>User</dt>
+              <dd>{currentUserEmail ?? "Unknown"}</dd>
+            </div>
+            <div>
+              <dt>Summary model</dt>
+              <dd>{summaryModel}</dd>
+            </div>
+            <div>
+              <dt>Blob upload</dt>
+              <dd>{hasBlobStore ? "Available" : "Unavailable"}</dd>
+            </div>
+            <div>
+              <dt>Providers</dt>
+              <dd>{providers.length}</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section className="inspector-section">
+          <p className="section-kicker">Output snapshot</p>
+          <div className="snapshot-grid">
+            {outputSnapshot.map((item) => (
+              <div key={item.label} className="snapshot-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="inspector-section">
+          <p className="section-kicker">Review reminders</p>
+          <ul className="detail-list">
+            <li>verify names, dates, and deadlines before filing or advising</li>
+            <li>treat ambiguity and missing facts as work to do, not resolved truth</li>
+            <li>export only after checking confidentiality and consent constraints</li>
+          </ul>
+        </section>
+
+        {systemNotes.length > 0 ? (
+          <section className="inspector-section">
+            <p className="section-kicker">Configuration notes</p>
+            <ul className="detail-list">
+              {systemNotes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+      </aside>
     </section>
   );
 }
