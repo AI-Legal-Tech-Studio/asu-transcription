@@ -35,7 +35,7 @@ export async function POST(request: Request) {
 
   // Cap upload-token requests per IP. Without this, an attacker with a
   // hijacked session could mint thousands of signed blob URLs.
-  const limit = rateLimit(`uploads:${getClientIp(request)}`, {
+  const limit = await rateLimit(`uploads:${getClientIp(request)}`, {
     max: 60,
     windowMs: 10 * 60_000,
   });

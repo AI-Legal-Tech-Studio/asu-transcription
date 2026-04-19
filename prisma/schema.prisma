@@ -7,11 +7,14 @@ datasource db {
 }
 
 model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  jobs      Job[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id                String    @id @default(cuid())
+  email             String    @unique
+  jobs              Job[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  // When set, any JWT with an iat strictly earlier than this timestamp is
+  // rejected by verifySessionToken. Bumped on logout and on password rotation.
+  sessionsRevokedAt DateTime?
 
   @@map("VoiceTranscriptionUser")
 }

@@ -68,7 +68,7 @@ export async function POST(request: Request) {
   // Cap how often a single account can kick off transcription jobs. Gemini
   // background jobs, OpenRouter calls, and Vercel Blob usage all cost money —
   // rate-limiting here is both a security and a cost control.
-  const limit = rateLimit(`summarize:${userEmail}:${getClientIp(request)}`, {
+  const limit = await rateLimit(`summarize:${userEmail}:${getClientIp(request)}`, {
     max: 30,
     windowMs: 10 * 60_000,
   });

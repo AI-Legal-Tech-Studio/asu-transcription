@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   SESSION_COOKIE_NAME,
   createSessionToken,
+  ensureUserRecord,
   getSessionCookieOptions,
 } from "@/lib/auth";
 import { assertSameOrigin, CsrfError } from "@/lib/csrf";
@@ -31,7 +32,7 @@ export async function POST(request: Request) {
   // 10 attempts per IP per 15 minutes. Low-friction for real users, kills
   // credential-stuffing bots on shared infra.
   const ip = getClientIp(request);
-  const ipLimit = rateLimit(`login:ip:${ip}`, { max: 10, windowMs: 15 * 60_000 });
+  const ipLimit = await rateLimit(`login:ip:${ip}`, { max: 10, windowMs: 15 * 60_000 });
   if (!ipLimit.allowed) {
     return NextResponse.redirect(
       new URL("/?error=rate_limited", request.url),
@@ -54,7 +55,7 @@ export async function POST(request: Request) {
 
   // Per-email limit defends individual accounts from targeted brute force.
   const emailKey = parsed.data.email.trim().toLowerCase();
-  const emailLimit = rateLimit(`login:email:${emailKey}`, {
+  const emailLimit = await rateLimit(`login:email:${emailKey}`, {
     max: 5,
     windowMs: 15 * 60_000,
   });
@@ -88,6 +89,12 @@ export async function POST(request: Request) {
   }
 
   console.info(`[auth] login success email=${validatedEmail} ip=${ip}`);
+  // Make sure the DB row exists so revocation state has somewhere to live,
+  // but don't fail the login if the DB is temporarily unavailable — the
+  // session is still cryptographically valid.
+  await ensureUserRecord(validatedEmail).catch((error) => {
+    console.error("[auth] ensureUserRecord failed during login", error);
+  });
   const token = await createSessionToken(validatedEmail);
   const response = NextResponse.redirect(
     new URL("/workspace", request.url),
