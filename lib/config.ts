@@ -48,6 +48,12 @@ export function hasUsers() {
   return getUsers().length > 0;
 }
 
+// A fixed bcrypt hash of a random unguessable password. Used only to keep the
+// unknown-user and wrong-password codepaths indistinguishable in wall-clock
+// time, defeating username-enumeration via timing.
+const DUMMY_BCRYPT_HASH =
+  "$2b$10$7rTROl5ezhnWq1u06vkI0uDH3SqVdHqQbsG7lYkB2yhGmGnnv4P9i";
+
 export async function validateCredentials(
   email: string,
   password: string,
@@ -57,18 +63,20 @@ export async function validateCredentials(
   const normalizedPassword = password.trim();
 
   if (!normalizedEmail || !normalizedPassword) {
+    // Still spend time comparing so we don't reveal "empty input" via timing.
+    await bcrypt.compare("unused", DUMMY_BCRYPT_HASH);
     return null;
   }
 
   const user = getUsers().find((candidate) => candidate.email === normalizedEmail);
+  const hashToCompare = user?.passwordHash ?? DUMMY_BCRYPT_HASH;
+  const matches = await bcrypt.compare(normalizedPassword, hashToCompare);
 
-  if (!user) {
+  if (!user || !matches) {
     return null;
   }
 
-  return (await bcrypt.compare(normalizedPassword, user.passwordHash))
-    ? user.email
-    : null;
+  return user.email;
 }
 
 export function hasSessionSecret() {

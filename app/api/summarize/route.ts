@@ -8,6 +8,8 @@ import {
   type StoredAudioPayload,
 } from "@/lib/audio-upload";
 import { readStoredAudioForTranscription } from "@/lib/blob-storage";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
+import { getClientIp, rateLimit } from "@/lib/rate-limit";
 import {
   ACCEPTED_AUDIO_TYPES,
   hasDatabaseConfig,
@@ -48,10 +50,36 @@ async function cleanupSource(cleanup: (() => Promise<void>) | null) {
 }
 
 export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (error) {
+    if (error instanceof CsrfError) {
+      return NextResponse.json({ error: "Bad request." }, { status: 400 });
+    }
+    throw error;
+  }
+
   const userEmail = await getCurrentUser();
 
   if (!userEmail) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
+  // Cap how often a single account can kick off transcription jobs. Gemini
+  // background jobs, OpenRouter calls, and Vercel Blob usage all cost money —
+  // rate-limiting here is both a security and a cost control.
+  const limit = rateLimit(`summarize:${userEmail}:${getClientIp(request)}`, {
+    max: 30,
+    windowMs: 10 * 60_000,
+  });
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: "Too many transcription requests. Please wait a few minutes." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(limit.resetSeconds) },
+      },
+    );
   }
 
   if (!hasDatabaseConfig()) {

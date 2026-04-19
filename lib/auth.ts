@@ -1,7 +1,14 @@
 import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
-export const SESSION_COOKIE_NAME = "clinic-audio-session";
+// The `__Host-` prefix (RFC 6265bis) binds the cookie to a single origin:
+// the browser refuses to accept it unless Secure is set, Path=/, and no
+// Domain attribute is present. This prevents subdomain-takeover cookie
+// injection. In local non-HTTPS dev we fall back to the unprefixed name.
+export const SESSION_COOKIE_NAME =
+  process.env.NODE_ENV === "production"
+    ? "__Host-clinic-audio-session"
+    : "clinic-audio-session";
 
 const SESSION_SCOPE = "clinic-access";
 const SESSION_DURATION_SECONDS = 60 * 60 * 12; // 12 hours
@@ -77,6 +84,9 @@ export function getSessionCookieOptions() {
     httpOnly: true,
     maxAge: SESSION_DURATION_SECONDS,
     path: "/",
+    // Lax lets top-level navigation from the login redirect keep the cookie,
+    // but blocks it from sub-resource cross-site requests. Combined with
+    // `assertSameOrigin` on every state-changing route, CSRF is covered.
     sameSite: "lax" as const,
     secure: process.env.NODE_ENV === "production",
   };

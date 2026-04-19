@@ -10,15 +10,39 @@ import {
   ACCEPTED_AUDIO_TYPES,
   hasBlobStoreConfig,
 } from "@/lib/config";
+import { assertSameOrigin, CsrfError } from "@/lib/csrf";
 import { getProvider, getProviderUploadMaxBytes } from "@/lib/providers";
+import { getClientIp, rateLimit } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  try {
+    assertSameOrigin(request);
+  } catch (error) {
+    if (error instanceof CsrfError) {
+      return NextResponse.json({ error: "Bad request." }, { status: 400 });
+    }
+    throw error;
+  }
+
   if (!hasBlobStoreConfig()) {
     return NextResponse.json(
       { error: "Blob-backed uploads are not configured on this deployment." },
       { status: 503 },
+    );
+  }
+
+  // Cap upload-token requests per IP. Without this, an attacker with a
+  // hijacked session could mint thousands of signed blob URLs.
+  const limit = rateLimit(`uploads:${getClientIp(request)}`, {
+    max: 60,
+    windowMs: 10 * 60_000,
+  });
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { error: "Too many upload requests. Please wait a few minutes." },
+      { status: 429, headers: { "Retry-After": String(limit.resetSeconds) } },
     );
   }
 
@@ -63,9 +87,12 @@ export async function POST(request: Request) {
 
     return NextResponse.json(jsonResponse);
   } catch (error) {
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : String(error) },
-      { status: 400 },
-    );
+    // Log the underlying cause but keep the response generic in production.
+    console.error("[uploads] handleUpload failed", error);
+    const publicMessage =
+      error instanceof Error && error.message === "Unauthorized."
+        ? "Unauthorized."
+        : "The upload request could not be completed.";
+    return NextResponse.json({ error: publicMessage }, { status: 400 });
   }
 }

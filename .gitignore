@@ -12,6 +12,9 @@ CLAUDE.md
 *.md
 !README.md
 
+# Local archive of planning/history the user keeps beside the repo.
+archive/
+
 # Credentials and tokens (AGENTS.md: never commit)
 config/google_credentials.json
 config/google_token.json

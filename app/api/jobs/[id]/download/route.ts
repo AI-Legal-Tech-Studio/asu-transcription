@@ -11,6 +11,10 @@ import { getCurrentUser } from "@/lib/auth";
 import { hasDatabaseConfig } from "@/lib/config";
 import { loadStoredJobForUser } from "@/lib/job-store";
 
+function isPlausibleJobId(value: string) {
+  return /^[a-z0-9-]{16,64}$/i.test(value);
+}
+
 type RouteContext = {
   params: Promise<{
     id: string;
@@ -41,6 +45,16 @@ function sanitizeFileName(name: string) {
     .replace(/[^\w\s-]/g, "")
     .trim()
     .replace(/\s+/g, "_");
+}
+
+// RFC 5987 encoding for Content-Disposition filename* parameter. Belt-and-
+// suspenders on top of sanitizeFileName to prevent any CR/LF or quote that
+// slips through from breaking out of the header.
+function contentDispositionAttachment(baseName: string, extension: string) {
+  const safeBase = sanitizeFileName(baseName) || "transcript";
+  const asciiFallback = safeBase.replace(/[^A-Za-z0-9._-]/g, "_");
+  const utf8 = encodeURIComponent(`${safeBase}.${extension}`);
+  return `attachment; filename="${asciiFallback}.${extension}"; filename*=UTF-8''${utf8}`;
 }
 
 function buildDocx(transcript: string, fileName: string) {
@@ -93,6 +107,9 @@ export async function GET(request: Request, { params }: RouteContext) {
   const format = url.searchParams.get("format") || "txt";
 
   const { id } = await params;
+  if (!isPlausibleJobId(id)) {
+    return NextResponse.json({ error: "Job not found." }, { status: 404 });
+  }
   const job = await loadStoredJobForUser(id, userEmail);
 
   if (!job) {
@@ -108,8 +125,6 @@ export async function GET(request: Request, { params }: RouteContext) {
     );
   }
 
-  const baseName = sanitizeFileName(job.fileName) || "transcript";
-
   if (format === "docx") {
     const doc = buildDocx(transcript, job.fileName);
     const buffer = await Packer.toBuffer(doc);
@@ -118,7 +133,8 @@ export async function GET(request: Request, { params }: RouteContext) {
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "Content-Disposition": `attachment; filename="${baseName}.docx"`,
+        "Content-Disposition": contentDispositionAttachment(job.fileName, "docx"),
+        "X-Content-Type-Options": "nosniff",
       },
     });
   }
@@ -126,7 +142,8 @@ export async function GET(request: Request, { params }: RouteContext) {
   return new Response(transcript, {
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${baseName}.txt"`,
+      "Content-Disposition": contentDispositionAttachment(job.fileName, "txt"),
+      "X-Content-Type-Options": "nosniff",
     },
   });
 }
