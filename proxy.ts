@@ -28,7 +28,7 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Resource-Policy": "same-origin",
   // Conservative CSP: self-only, inline styles allowed (Next font loader),
-  // blob/data for audio previews, API calls to self only.
+  // blob/data for audio previews, API calls to self and Vercel Blob only.
   "Content-Security-Policy": [
     "default-src 'self'",
     "script-src 'self' 'unsafe-inline'",
@@ -36,7 +36,7 @@ const SECURITY_HEADERS: Record<string, string> = {
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob:",
     "media-src 'self' blob: https://*.public.blob.vercel-storage.com",
-    "connect-src 'self' https://*.public.blob.vercel-storage.com https://*.blob.vercel-storage.com",
+    "connect-src 'self' https://vercel.com https://*.public.blob.vercel-storage.com https://*.blob.vercel-storage.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",
